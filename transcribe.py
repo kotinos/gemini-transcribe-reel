@@ -9,6 +9,7 @@ import os
 import tempfile
 import subprocess
 import socket
+import time
 from pathlib import Path
 
 try:
@@ -45,14 +46,17 @@ def check_network():
 
 def validate_url(url):
     """Basic URL validation - just check if it's a URL"""
+    # Add length limit to prevent DoS
+    if len(url) > 2048:
+        return False
     return url.startswith(('http://', 'https://')) and '.' in url
 
 def check_dependencies():
     """Verify required tools are installed"""
-    for cmd, install in [('yt-dlp', 'pip install yt-dlp'), ('ffmpeg', 'brew install ffmpeg')]:
-        if subprocess.run(['which', cmd], capture_output=True).returncode != 0:
-            print(f"ERROR: {cmd} not installed. Install with: {install}", file=sys.stderr)
-            sys.exit(ERROR_DOWNLOAD if cmd == 'yt-dlp' else ERROR_AUDIO)
+    # Only need yt-dlp now, no FFmpeg required for video upload
+    if subprocess.run(['which', 'yt-dlp'], capture_output=True).returncode != 0:
+        print("ERROR: yt-dlp not installed. Install with: pip install yt-dlp", file=sys.stderr)
+        sys.exit(ERROR_DOWNLOAD)
 
 def download_reel(url, output_dir):
     try:
@@ -86,102 +90,75 @@ def download_reel(url, output_dir):
         debug_print(f"Other download error: {e}", file=sys.stderr)
         return None
 
-def extract_audio(video_path, audio_path):
-    """Extract audio as WAV for better compatibility"""
-    debug_print(f"Video path: '{video_path}'")
-    debug_print(f"Audio path: '{audio_path}'")
-    debug_print(f"Video exists: {Path(video_path).exists()}")
-    
+def transcribe_video(video_path):
+    """Send video to Gemini API, wait for processing, then transcribe"""
     try:
-        # Build FFmpeg command
-        cmd = [
-            'ffmpeg',
-            '-i', video_path,
-            '-vn',  # No video
-            '-ar', '16000',  # 16kHz sample rate
-            '-ac', '1',  # Mono
-            '-f', 'wav',  # WAV format
-            '-y',  # Overwrite
-            audio_path
-        ]
+        debug_print("Starting Gemini API call (video)...")
+        size_mb = Path(video_path).stat().st_size / (1024 * 1024)
+        debug_print(f"Video file size: {size_mb:.2f} MB")
         
-        debug_print(f"Running command: {' '.join(cmd)}")
-        
-        # Run FFmpeg with error output visible
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,  # Get text output instead of bytes
-            timeout=30
-        )
-        
-        debug_print(f"FFmpeg return code: {result.returncode}")
-        
-        if result.stdout:
-            debug_print(f"FFmpeg stdout:\n{result.stdout}")
-        
-        if result.stderr:
-            debug_print(f"FFmpeg stderr:\n{result.stderr}")
-        
-        # Check if output file was created
-        audio_exists = Path(audio_path).exists()
-        debug_print(f"Audio file created: {audio_exists}")
-        
-        if audio_exists:
-            size = Path(audio_path).stat().st_size
-            debug_print(f"Audio file size: {size} bytes ({size/(1024*1024):.2f} MB)")
-            
-            # Check if file is too large
-            if size > 20 * 1024 * 1024:  # 20MB
-                print("ERROR: Audio file too large for free tier", file=sys.stderr)
-                return False
-            
-            return True
-        else:
-            debug_print(f"Audio file not created at: {audio_path}")
-            return False
-        
-    except subprocess.TimeoutExpired:
-        debug_print("FFmpeg command timed out", file=sys.stderr)
-        return False
-    except Exception as e:
-        debug_print(f"Exception in extract_audio: {e}", file=sys.stderr)
-        return False
+        if size_mb > 20:
+            print("ERROR: Video file too large for free tier (max 20MB)", file=sys.stderr)
+            return None
 
-def transcribe_audio(audio_path):
-    """Send audio to Gemini API, return transcription or None"""
-    try:
-        debug_print("Starting Gemini API call...")
-        debug_print(f"Audio file size: {Path(audio_path).stat().st_size / (1024*1024):.2f} MB")
+        debug_print("Uploading video file to Gemini...")
+        video_file = genai.upload_file(path=video_path)
+        debug_print(f"File uploaded. File ID: {video_file.name}")
         
-        # Upload and transcribe
-        debug_print("Uploading file to Gemini...")
-        audio_file = genai.upload_file(path=audio_path)
-        debug_print(f"File uploaded successfully. File ID: {audio_file.name}")
+        # Wait for file to be processed
+        debug_print("Waiting for file to be processed...")
+        max_wait_time = 60  # Maximum 60 seconds
+        wait_interval = 2   # Check every 2 seconds
+        elapsed = 0
         
+        while elapsed < max_wait_time:
+            # Refresh file status
+            file_info = genai.get_file(video_file.name)
+            debug_print(f"File state: {file_info.state.name}")
+            
+            if file_info.state.name == 'ACTIVE':
+                debug_print("File is now active!")
+                break
+            elif file_info.state.name == 'FAILED':
+                print("ERROR: File processing failed", file=sys.stderr)
+                return None
+            
+            debug_print(f"Still processing... ({elapsed}s elapsed)")
+            time.sleep(wait_interval)
+            elapsed += wait_interval
+        
+        if elapsed >= max_wait_time:
+            print("ERROR: File processing timeout", file=sys.stderr)
+            return None
+
+        # Now generate content with the active file
         debug_print("Creating model...")
         model = genai.GenerativeModel('gemini-2.5-flash')
         
+        prompt = (
+            "Transcribe all spoken words from this video. "
+            "If there are visible captions or text overlays, include them as well. "
+            "Output only the complete transcription text."
+        )
+        
         debug_print("Sending generation request...")
-        prompt = "Transcribe this audio. Output only the transcribed speech text. Use the onscreen captions for assistance if available."
-        response = model.generate_content([prompt, audio_file])
-        
+        response = model.generate_content([prompt, video_file])
         debug_print("Response received successfully")
-        
+
         # Cleanup
         try:
             debug_print("Cleaning up uploaded file...")
-            audio_file.delete()
+            video_file.delete()
         except:
             pass
-        
+
         if response and response.text:
             debug_print("Transcription successful")
             return response.text.strip()
         else:
             debug_print("No text in response")
             return None
-            
+
     except Exception as e:
         debug_print(f"Exception type: {type(e).__name__}")
         debug_print(f"Full error message: {str(e)}")
@@ -271,25 +248,19 @@ def main():
     with tempfile.TemporaryDirectory(prefix='reel_') as temp_dir:
         # Download
         video_path = download_reel(url, temp_dir)
-        print(f"Downloaded video: {video_path}")
+        debug_print(f"Downloaded video: {video_path}")
         if video_path:
-            print("Exists:", Path(video_path).exists(), "Size:", Path(video_path).stat().st_size)
+            debug_print(f"Exists: {Path(video_path).exists()}, Size: {Path(video_path).stat().st_size} bytes")
         if not video_path:
             print("ERROR: Could not download reel (check URL or network)", file=sys.stderr)
             sys.exit(ERROR_DOWNLOAD)
         
-        # Extract audio
-        audio_path = str(Path(temp_dir) / 'audio.wav')
-        if not extract_audio(video_path, audio_path):
-            print("ERROR: Could not process audio from video", file=sys.stderr)
-            sys.exit(ERROR_AUDIO)
-        
-        # Transcribe
-        transcription = transcribe_audio(audio_path)
+        # Transcribe video directly (no audio extraction needed)
+        transcription = transcribe_video(video_path)
         if transcription:
             print(transcription)
         else:
-            print("ERROR: Could not transcribe audio", file=sys.stderr)
+            print("ERROR: Could not transcribe video", file=sys.stderr)
             sys.exit(ERROR_API)
 
 if __name__ == "__main__":
