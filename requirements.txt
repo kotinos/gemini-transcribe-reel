@@ -2,3 +2,4 @@ yt-dlp
 google-generativeai
 python-dotenv
 ffmpeg-python
+flask

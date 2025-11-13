@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transcribe Reel</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+            padding: 2rem;
+            max-width: 600px;
+            margin: 0 auto;
+            line-height: 1.5;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-size: 0.95rem;
+            color: #333;
+        }
+        
+        input[type="text"] {
+            width: 100%;
+            padding: 0.75rem;
+            font-size: 1rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin-bottom: 1rem;
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #007bff;
+        }
+        
+        button {
+            width: 100%;
+            padding: 0.75rem;
+            font-size: 1rem;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        button:hover:not(:disabled) {
+            background-color: #0056b3;
+        }
+        
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        
+        .loading {
+            text-align: center;
+            color: #6c757d;
+            margin-top: 1rem;
+            font-size: 0.95rem;
+        }
+        
+        .error {
+            color: #dc3545;
+            margin-top: 1rem;
+            padding: 0.75rem;
+            background-color: #f8d7da;
+            border-radius: 4px;
+            font-size: 0.95rem;
+        }
+        
+        .result {
+            margin-top: 1rem;
+            padding: 1rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background-color: #f8f9fa;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 400px;
+            overflow-y: auto;
+            font-size: 0.95rem;
+            user-select: text;
+        }
+        
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <label for="url-input">Paste Reel URL</label>
+    <input 
+        type="text" 
+        id="url-input" 
+        placeholder="https://instagram.com/p/..." 
+        autocomplete="off"
+    >
+    
+    <button id="transcribe-btn">Transcribe</button>
+    
+    <div id="loading" class="loading hidden">Transcribing…</div>
+    <div id="error" class="error hidden"></div>
+    <div id="result" class="result hidden"></div>
+    
+    <script>
+        const urlInput = document.getElementById('url-input');
+        const transcribeBtn = document.getElementById('transcribe-btn');
+        const loading = document.getElementById('loading');
+        const error = document.getElementById('error');
+        const result = document.getElementById('result');
+        
+        function showLoading() {
+            transcribeBtn.disabled = true;
+            transcribeBtn.textContent = 'Transcribing…';
+            loading.classList.remove('hidden');
+            error.classList.add('hidden');
+            result.classList.add('hidden');
+        }
+        
+        function hideLoading() {
+            transcribeBtn.disabled = false;
+            transcribeBtn.textContent = 'Transcribe';
+            loading.classList.add('hidden');
+        }
+        
+        function showError(message) {
+            error.textContent = message;
+            error.classList.remove('hidden');
+            result.classList.add('hidden');
+        }
+        
+        function showResult(text) {
+            result.textContent = text;
+            result.classList.remove('hidden');
+            error.classList.add('hidden');
+        }
+        
+        async function transcribe() {
+            const url = urlInput.value.trim();
+            
+            if (!url) {
+                showError('ERROR: Please paste a URL');
+                return;
+            }
+            
+            showLoading();
+            
+            try {
+                const response = await fetch('/transcribe', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ url: url })
+                });
+                
+                const data = await response.json();
+                
+                hideLoading();
+                
+                if (data.success) {
+                    showResult(data.transcription);
+                } else {
+                    showError(data.error || 'ERROR: Transcription failed');
+                }
+            } catch (err) {
+                hideLoading();
+                showError('ERROR: Network error. Please check your connection.');
+            }
+        }
+        
+        transcribeBtn.addEventListener('click', transcribe);
+        
+        urlInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                transcribe();
+            }
+        });
+        
+        // Focus input on load
+        urlInput.focus();
+    </script>
+</body>
+</html>
