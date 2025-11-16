@@ -26,18 +26,26 @@
             color: #333;
         }
         
-        input[type="text"] {
+        input[type="text"],
+        textarea {
             width: 100%;
             padding: 0.75rem;
             font-size: 1rem;
             border: 1px solid #ccc;
             border-radius: 4px;
             margin-bottom: 1rem;
+            font-family: inherit;
         }
         
-        input[type="text"]:focus {
+        input[type="text"]:focus,
+        textarea:focus {
             outline: none;
             border-color: #007bff;
+        }
+        
+        textarea {
+            resize: vertical;
+            min-height: 100px;
         }
         
         button {
@@ -90,6 +98,42 @@
             user-select: text;
         }
         
+        .batch-result {
+            margin-top: 0.5rem;
+            padding: 0.75rem;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            background-color: #fff;
+        }
+        
+        .batch-result-header {
+            font-weight: 600;
+            color: #495057;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+        
+        .batch-result-success {
+            border-left: 3px solid #28a745;
+        }
+        
+        .batch-result-failed {
+            border-left: 3px solid #dc3545;
+        }
+        
+        .batch-result-failed .batch-result-header {
+            color: #dc3545;
+        }
+        
+        .batch-summary {
+            margin-top: 1rem;
+            padding: 0.75rem;
+            background-color: #e9ecef;
+            border-radius: 4px;
+            font-weight: 600;
+            text-align: center;
+        }
+        
         .hidden {
             display: none;
         }
@@ -104,6 +148,12 @@
         autocomplete="off"
     >
     
+    <label for="batch-input">Or Paste Multiple URLs (one per line)</label>
+    <textarea 
+        id="batch-input" 
+        placeholder="https://instagram.com/p/...&#10;https://tiktok.com/@user/video/...&#10;https://facebook.com/watch/..."
+    ></textarea>
+    
     <button id="transcribe-btn">Transcribe</button>
     
     <div id="loading" class="loading hidden">Transcribing…</div>
@@ -112,6 +162,7 @@
     
     <script>
         const urlInput = document.getElementById('url-input');
+        const batchInput = document.getElementById('batch-input');
         const transcribeBtn = document.getElementById('transcribe-btn');
         const loading = document.getElementById('loading');
         const error = document.getElementById('error');
@@ -143,11 +194,57 @@
             error.classList.add('hidden');
         }
         
-        async function transcribe() {
-            const url = urlInput.value.trim();
+        function showBatchResults(results) {
+            const successCount = results.filter(r => r.success).length;
+            const total = results.length;
             
-            if (!url) {
-                showError('ERROR: Please paste a URL');
+            result.innerHTML = '';
+            
+            // Add summary
+            const summary = document.createElement('div');
+            summary.className = 'batch-summary';
+            summary.textContent = `BATCH RESULTS: ${successCount}/${total} successful`;
+            result.appendChild(summary);
+            
+            // Add individual results
+            results.forEach((item, index) => {
+                const resultDiv = document.createElement('div');
+                resultDiv.className = `batch-result ${item.success ? 'batch-result-success' : 'batch-result-failed'}`;
+                
+                const header = document.createElement('div');
+                header.className = 'batch-result-header';
+                header.textContent = `[${index + 1}] ${item.url}`;
+                resultDiv.appendChild(header);
+                
+                const content = document.createElement('div');
+                content.textContent = item.success ? item.transcription : '(FAILED)';
+                content.style.whiteSpace = 'pre-wrap';
+                content.style.wordWrap = 'break-word';
+                resultDiv.appendChild(content);
+                
+                result.appendChild(resultDiv);
+            });
+            
+            result.classList.remove('hidden');
+            error.classList.add('hidden');
+        }
+        
+        async function transcribe() {
+            const singleUrl = urlInput.value.trim();
+            const batchUrls = batchInput.value.trim();
+            
+            // Determine if single or batch
+            let urls = [];
+            if (singleUrl && !batchUrls) {
+                urls = [singleUrl];
+            } else if (batchUrls) {
+                urls = batchUrls.split('\n')
+                    .map(line => line.trim())
+                    .filter(line => line && !line.startsWith('#'));
+            }
+            
+            if (urls.length === 0) {
+                showError('ERROR: Please paste at least one URL');
                 return;
             }
             
@@ -159,7 +256,7 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ url: url })
+                    body: JSON.stringify({ urls: urls })
                 });
                 
                 const data = await response.json();
@@ -167,7 +264,13 @@
                 hideLoading();
                 
                 if (data.success) {
-                    showResult(data.transcription);
+                    if (data.results) {
+                        // Batch results
+                        showBatchResults(data.results);
+                    } else {
+                        // Single result
+                        showResult(data.transcription);
+                    }
                 } else {
                     showError(data.error || 'ERROR: Transcription failed');
                 }
@@ -182,6 +285,20 @@
         urlInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 transcribe();
+            }
+        });
+        
+        // Clear batch input when typing in single URL field
+        urlInput.addEventListener('input', () => {
+            if (urlInput.value.trim()) {
+                batchInput.value = '';
+            }
+        });
+        
+        // Clear single input when typing in batch field
+        batchInput.addEventListener('input', () => {
+            if (batchInput.value.trim()) {
+                urlInput.value = '';
             }
         });
         

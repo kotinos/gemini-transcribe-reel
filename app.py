@@ -28,9 +28,21 @@ def index():
 
 @app.route('/transcribe', methods=['POST'])
 def transcribe_endpoint():
-    """Handle transcription requests"""
+    """Handle transcription requests (single or batch)"""
+    import time
+    
     data = request.get_json()
-    url = data.get('url', '').strip()
+    urls = data.get('urls', [])
+    
+    # Support legacy single URL format
+    if not urls and 'url' in data:
+        urls = [data['url'].strip()]
+    
+    if not urls:
+        return jsonify({
+            'success': False,
+            'error': 'ERROR: No URLs provided'
+        }), 400
     
     # Check for API key
     if not api_key:
@@ -46,13 +58,6 @@ def transcribe_endpoint():
             'error': 'ERROR: No internet connection'
         }), 503
     
-    # Validate URL
-    if not transcribe.validate_url(url):
-        return jsonify({
-            'success': False,
-            'error': 'ERROR: Invalid URL format. Must be http:// or https:// from Instagram, TikTok, or Facebook.'
-        }), 400
-    
     # Check dependencies
     try:
         transcribe.check_dependencies()
@@ -62,19 +67,54 @@ def transcribe_endpoint():
             'error': 'ERROR: yt-dlp not installed. Server misconfiguration.'
         }), 500
     
-    # Process the URL
-    result = transcribe.process_url(url)
+    # Process URLs
+    results = []
+    total = len(urls)
     
-    if result:
+    for i, url in enumerate(urls, 1):
+        # Validate URL
+        if not transcribe.validate_url(url):
+            results.append({
+                'url': url,
+                'success': False,
+                'transcription': None,
+                'error': 'Invalid URL format'
+            })
+            continue
+        
+        # Process the URL
+        result = transcribe.process_url(url, i, total)
+        
+        results.append({
+            'url': url,
+            'success': result is not None,
+            'transcription': result,
+            'error': None if result else 'Transcription failed'
+        })
+        
+        # Rate limiting between requests (except for last one)
+        if i < total:
+            time.sleep(4)  # Free tier: 15 requests/minute
+    
+    # Return appropriate response
+    if len(urls) == 1:
+        # Single URL - return simple format
+        if results[0]['success']:
+            return jsonify({
+                'success': True,
+                'transcription': results[0]['transcription']
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': f"ERROR: {results[0]['error']}"
+            }), 500
+    else:
+        # Batch - return all results
         return jsonify({
             'success': True,
-            'transcription': result
+            'results': results
         })
-    else:
-        return jsonify({
-            'success': False,
-            'error': 'ERROR: Could not transcribe video. Check URL or try again later.'
-        }), 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='127.0.0.1', port=5000)
