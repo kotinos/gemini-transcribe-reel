@@ -56,9 +56,13 @@ def validate_url(url):
 
 def check_dependencies():
     """Verify required tools are installed"""
-    # Only need yt-dlp now, no FFmpeg required for video upload
     if subprocess.run(['where', 'yt-dlp'], capture_output=True).returncode != 0:
         print("ERROR: yt-dlp not installed. Install with: pip install yt-dlp", file=sys.stderr)
+        sys.exit(ERROR_DOWNLOAD)
+    
+    # FFmpeg is now required for video compression
+    if subprocess.run(['where', 'ffmpeg'], capture_output=True).returncode != 0:
+        print("ERROR: ffmpeg not installed. Install from: https://ffmpeg.org/download.html", file=sys.stderr)
         sys.exit(ERROR_DOWNLOAD)
 
 def download_reel(url, output_dir):
@@ -93,16 +97,101 @@ def download_reel(url, output_dir):
         debug_print(f"Other download error: {e}", file=sys.stderr)
         return None
 
-def transcribe_video(video_path):
+def compress_video(input_path, output_path, target_size_mb=18):
+    """Compress video to target size using FFmpeg"""
+    try:
+        debug_print(f"Compressing video to ~{target_size_mb}MB...")
+        
+        # Get video duration
+        probe_result = subprocess.run(
+            [
+                'ffprobe',
+                '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                input_path
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        duration = float(probe_result.stdout.strip())
+        debug_print(f"Video duration: {duration:.2f} seconds")
+        
+        # Calculate target bitrate (80% of target to leave room for audio)
+        target_size_bits = target_size_mb * 8 * 1024 * 1024
+        video_bitrate = int((target_size_bits * 0.8) / duration)
+        audio_bitrate = '64k'
+        
+        debug_print(f"Target video bitrate: {video_bitrate} bps")
+        
+        # Compress with FFmpeg
+        result = subprocess.run(
+            [
+                'ffmpeg',
+                '-i', input_path,
+                '-c:v', 'libx264',
+                '-b:v', str(video_bitrate),
+                '-c:a', 'aac',
+                '-b:a', audio_bitrate,
+                '-movflags', '+faststart',
+                '-y',  # Overwrite output file
+                output_path
+            ],
+            capture_output=True,
+            timeout=120
+        )
+        
+        if result.returncode != 0:
+            debug_print(f"FFmpeg error: {result.stderr.decode('utf-8', errors='ignore')}", file=sys.stderr)
+            return None
+        
+        if Path(output_path).exists():
+            compressed_size_mb = Path(output_path).stat().st_size / (1024 * 1024)
+            debug_print(f"Compressed video size: {compressed_size_mb:.2f} MB")
+            return output_path
+        else:
+            debug_print("Compressed file not created", file=sys.stderr)
+            return None
+            
+    except subprocess.TimeoutExpired:
+        debug_print("FFmpeg compression timed out", file=sys.stderr)
+        return None
+    except Exception as e:
+        debug_print(f"Compression error: {e}", file=sys.stderr)
+        return None
+
+def transcribe_video(video_path, temp_dir=None):
     """Send video to Gemini API, wait for processing, then transcribe"""
     try:
         debug_print("Starting Gemini API call (video)...")
         size_mb = Path(video_path).stat().st_size / (1024 * 1024)
         debug_print(f"Video file size: {size_mb:.2f} MB")
         
+        # If video is too large, compress it
         if size_mb > 20:
-            print("ERROR: Video file too large for free tier (max 20MB)", file=sys.stderr)
-            return None
+            debug_print(f"Video exceeds 20MB limit, attempting compression...")
+            
+            if temp_dir is None:
+                print("ERROR: Cannot compress video without temp directory", file=sys.stderr)
+                return None
+            
+            compressed_path = str(Path(temp_dir) / 'compressed_video.mp4')
+            result = compress_video(video_path, compressed_path)
+            
+            if result is None:
+                print("ERROR: Video compression failed", file=sys.stderr)
+                return None
+            
+            # Check compressed size
+            compressed_size_mb = Path(compressed_path).stat().st_size / (1024 * 1024)
+            if compressed_size_mb > 20:
+                print(f"ERROR: Even after compression, video is {compressed_size_mb:.2f}MB (max 20MB)", file=sys.stderr)
+                return None
+            
+            video_path = compressed_path
+            debug_print(f"Using compressed video: {compressed_size_mb:.2f} MB")
 
         debug_print("Uploading video file to Gemini...")
         video_file = genai.upload_file(path=video_path)
@@ -218,7 +307,7 @@ def process_url(url, index=None, total=None):
             return None
         
         # Transcribe
-        transcription = transcribe_video(video_path)
+        transcription = transcribe_video(video_path, temp_dir)
         if transcription:
             return transcription
         else:
