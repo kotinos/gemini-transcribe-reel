@@ -105,7 +105,7 @@ Zero-cost video transcription tool that downloads Instagram Reels, TikTok videos
 - CLI and web share the same validation, processing, and error paths via `transcribe.py`
 - All external dependencies mocked in tests; no network, API, or filesystem side effects
 - `tempfile.TemporaryDirectory` guarantees cleanup on all code paths
-- 48 tests across 13 test classes covering all error codes, batch behavior, rate limiting, and output formatting
+- 66 tests total (55 in `test_transcribe.py` across 13 classes + 11 in `test_app.py` across 2 classes) covering all error codes, batch behavior, rate limiting, output formatting, and HTTP routes
 
 ## Acceptance Criteria
 
@@ -115,7 +115,7 @@ Zero-cost video transcription tool that downloads Instagram Reels, TikTok videos
 4. Missing `GEMINI_API_KEY` exits with code 3 and a message naming `.env`.
 5. 4-second delay is applied between batch items (verified in `TestRateLimiting`).
 6. Temp directory is auto-cleaned for both success and failure paths (verified in `TestTemporaryFileHandling`).
-7. All 48 tests in `test_transcribe.py` pass with 100% coverage of `transcribe.py`.
+7. All 66 tests pass (55 in `test_transcribe.py` + 11 in `test_app.py`) with coverage of `transcribe.py`.
 
 ## Dependencies
 

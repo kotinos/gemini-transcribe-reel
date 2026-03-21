@@ -390,7 +390,8 @@ def main():
             results.append({
                 'url': url,
                 'transcription': transcription,
-                'success': transcription is not None
+                'success': transcription is not None,
+                'error': None if transcription else 'Transcription failed'
             })
             
             # Rate limiting: wait between requests

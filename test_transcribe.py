@@ -80,17 +80,33 @@ class TestURLValidation:
         url = "https://example.com/" + "a" * 2020
         assert transcribe.validate_url(url) is True
 
+    def test_empty_string(self):
+        """Test that empty string is rejected"""
+        assert transcribe.validate_url("") is False
+
+    def test_exactly_2048_chars(self):
+        """Test URL at exactly 2048 characters (should pass)"""
+        url = "https://example.com/" + "a" * (2048 - len("https://example.com/"))
+        assert len(url) == 2048
+        assert transcribe.validate_url(url) is True
+
+    def test_exactly_2049_chars(self):
+        """Test URL at exactly 2049 characters (should fail)"""
+        url = "https://example.com/" + "a" * (2049 - len("https://example.com/"))
+        assert len(url) == 2049
+        assert transcribe.validate_url(url) is False
+
 
 class TestDependencyCheck:
     """Test dependency checking"""
     
     @patch('subprocess.run')
     def test_check_dependencies_success(self, mock_run):
-        """Test when yt-dlp is installed"""
+        """Test when yt-dlp and ffmpeg are installed"""
         mock_run.return_value = Mock(returncode=0)
         # Should not raise SystemExit
         transcribe.check_dependencies()
-        mock_run.assert_called_once()
+        assert mock_run.call_count == 2  # yt-dlp + ffmpeg
     
     @patch('subprocess.run')
     def test_check_dependencies_missing_ytdlp(self, mock_run):
@@ -183,15 +199,104 @@ class TestTranscribeVideo:
         assert result == "This is the transcription"
         mock_upload.assert_called_once_with(path="test_video.mp4")
         mock_video_file.delete.assert_called_once()
+
+    @patch('transcribe.genai.upload_file')
+    @patch('transcribe.genai.get_file')
+    @patch('transcribe.genai.GenerativeModel')
+    @patch('pathlib.Path.stat')
+    @patch('time.sleep')
+    def test_transcribe_video_polling_occurs(self, mock_sleep, mock_stat, mock_model_class,
+                                             mock_get_file, mock_upload):
+        """Test that polling occurs with 2-second intervals before file becomes ACTIVE"""
+        mock_stat.return_value.st_size = 10 * 1024 * 1024
+
+        mock_video_file = Mock()
+        mock_video_file.name = "test_file_id"
+        mock_video_file.delete = Mock()
+        mock_upload.return_value = mock_video_file
+
+        # Return PROCESSING twice, then ACTIVE
+        processing_info = Mock()
+        processing_info.state.name = 'PROCESSING'
+        active_info = Mock()
+        active_info.state.name = 'ACTIVE'
+        mock_get_file.side_effect = [processing_info, processing_info, active_info]
+
+        mock_model = Mock()
+        mock_response = Mock()
+        mock_response.text = "Polled transcription"
+        mock_model.generate_content.return_value = mock_response
+        mock_model_class.return_value = mock_model
+
+        result = transcribe.transcribe_video("test_video.mp4")
+
+        assert result == "Polled transcription"
+        # Verify polling happened: 2 sleeps of 2 seconds each (PROCESSING → PROCESSING → ACTIVE)
+        assert mock_sleep.call_count == 2
+        mock_sleep.assert_called_with(2)
+        assert mock_get_file.call_count == 3
     
     @patch('pathlib.Path.stat')
     def test_transcribe_video_too_large(self, mock_stat):
-        """Test video file too large for Gemini (>20MB)"""
+        """Test video file too large for Gemini (>20MB) without temp_dir"""
         mock_stat.return_value.st_size = 25 * 1024 * 1024  # 25MB
         
         result = transcribe.transcribe_video("large_video.mp4")
         assert result is None
-    
+
+    @patch('transcribe.compress_video')
+    @patch('transcribe.genai.upload_file')
+    @patch('transcribe.genai.get_file')
+    @patch('transcribe.genai.GenerativeModel')
+    @patch('pathlib.Path.stat')
+    @patch('pathlib.Path.exists')
+    def test_transcribe_video_compression_success(self, mock_exists, mock_stat, mock_model_class,
+                                                  mock_get_file, mock_upload, mock_compress):
+        """Test video > 20MB that succeeds after compression"""
+        # First call: original file is 25MB; subsequent calls: compressed file is 15MB
+        mock_stat.side_effect = [
+            Mock(st_size=25 * 1024 * 1024),  # original size check
+            Mock(st_size=15 * 1024 * 1024),  # compressed size check
+        ]
+        mock_exists.return_value = True
+        mock_compress.return_value = "/tmp/compressed_video.mp4"
+
+        mock_video_file = Mock()
+        mock_video_file.name = "test_file_id"
+        mock_video_file.delete = Mock()
+        mock_upload.return_value = mock_video_file
+
+        mock_file_info = Mock()
+        mock_file_info.state.name = 'ACTIVE'
+        mock_get_file.return_value = mock_file_info
+
+        mock_model = Mock()
+        mock_response = Mock()
+        mock_response.text = "Compressed transcription"
+        mock_model.generate_content.return_value = mock_response
+        mock_model_class.return_value = mock_model
+
+        result = transcribe.transcribe_video("large_video.mp4", temp_dir="/tmp")
+        assert result == "Compressed transcription"
+        mock_compress.assert_called_once()
+
+    @patch('transcribe.compress_video')
+    @patch('pathlib.Path.stat')
+    @patch('pathlib.Path.exists')
+    def test_transcribe_video_compression_still_too_large(self, mock_exists, mock_stat, mock_compress, capsys):
+        """Test video > 20MB that still exceeds 20MB after compression"""
+        mock_stat.side_effect = [
+            Mock(st_size=25 * 1024 * 1024),  # original size check
+            Mock(st_size=22 * 1024 * 1024),  # compressed still 22MB
+        ]
+        mock_exists.return_value = True
+        mock_compress.return_value = "/tmp/compressed_video.mp4"
+
+        result = transcribe.transcribe_video("large_video.mp4", temp_dir="/tmp")
+        captured = capsys.readouterr()
+        assert result is None
+        assert "Even after compression" in captured.err
+
     @patch('transcribe.genai.upload_file')
     @patch('transcribe.genai.get_file')
     @patch('pathlib.Path.stat')
@@ -409,6 +514,35 @@ class TestMainFunction:
         captured = capsys.readouterr()
         assert "BATCH RESULTS: 2/3 successful" in captured.out
         assert "(FAILED)" in captured.out
+
+    @patch('transcribe.check_network')
+    @patch('transcribe.check_dependencies')
+    @patch('transcribe.load_dotenv')
+    @patch('os.getenv')
+    @patch('transcribe.genai.configure')
+    @patch('transcribe.process_url')
+    @patch('time.sleep')
+    def test_main_batch_rate_limit_continues(self, mock_sleep, mock_process, mock_configure,
+                                             mock_getenv, mock_load_dotenv, mock_check_deps,
+                                             mock_check_network, capsys):
+        """Test that a rate-limit failure on one URL does not stop the batch"""
+        mock_check_network.return_value = True
+        mock_getenv.return_value = "test_api_key"
+        # Simulate: success, rate-limit failure (returns None), success
+        mock_process.side_effect = ["Result 1", None, "Result 3"]
+
+        with patch.object(sys, 'argv', ['transcribe.py',
+                                       'https://example.com/video1',
+                                       'https://example.com/video2',
+                                       'https://example.com/video3']):
+            transcribe.main()
+
+        captured = capsys.readouterr()
+        assert "BATCH RESULTS: 2/3 successful" in captured.out
+        # All 3 URLs were attempted
+        assert mock_process.call_count == 3
+        # Rate limiting still applied between items
+        assert mock_sleep.call_count == 2
     
     @patch('transcribe.check_network')
     @patch('transcribe.check_dependencies')
@@ -680,6 +814,23 @@ class TestOutputFormatting:
         assert "[3] https://example.com/video3" in captured.out
         # Check for failure indicator
         assert "(FAILED)" in captured.out
+
+    def test_errors_go_to_stderr(self, capsys):
+        """Test that error messages go to stderr, not stdout"""
+        # Invalid URL error should go to stderr
+        transcribe.process_url("not-a-url")
+        captured = capsys.readouterr()
+        assert "ERROR: Invalid URL" in captured.err
+        assert "ERROR" not in captured.out
+
+    @patch('transcribe.download_reel')
+    def test_download_error_to_stderr(self, mock_download, capsys):
+        """Test that download failure message goes to stderr"""
+        mock_download.return_value = None
+        transcribe.process_url("https://example.com/video")
+        captured = capsys.readouterr()
+        assert "ERROR: Could not download" in captured.err
+        assert "ERROR" not in captured.out
 
 
 if __name__ == "__main__":

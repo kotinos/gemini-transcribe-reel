@@ -198,7 +198,7 @@ with tempfile.TemporaryDirectory(prefix='reel_') as temp_dir:
 
 - **Framework:** pytest + pytest-mock + pytest-cov
 - **Coverage target:** 100% of `transcribe.py`
-- **Test suite:** 48 tests across 13 classes in `test_transcribe.py`
+- **Test suite:** 66 tests total — 55 across 13 classes in `test_transcribe.py`, 11 across 2 classes in `test_app.py`
 - **Run command:** `pytest test_transcribe.py -v --cov=transcribe --cov-report=html`
 - **Mocking:** All external dependencies fully mocked (Gemini API, yt-dlp subprocess, socket, file I/O)
 - **Integration smoke tests:** `test.sh` exercises real error paths against the live CLI
@@ -207,10 +207,10 @@ with tempfile.TemporaryDirectory(prefix='reel_') as temp_dir:
 |------------|-------|---------------|
 | `TestDebugPrint` | 2 | Debug output on/off |
 | `TestNetworkCheck` | 2 | Socket connectivity mocking |
-| `TestURLValidation` | 6 | Valid/invalid URLs, length limits |
+| `TestURLValidation` | 9 | Valid/invalid URLs, length limits, boundary cases |
 | `TestDependencyCheck` | 2 | yt-dlp/FFmpeg presence |
 | `TestDownloadReel` | 4 | Success, timeout, no video, exceptions |
-| `TestTranscribeVideo` | 6 | Upload, polling, rate limit, auth errors |
+| `TestTranscribeVideo` | 9 | Upload, polling, compression, rate limit, auth errors |
 | `TestProcessURL` | 5 | End-to-end single-URL flow |
 | `TestMainFunction` | 13 | Arg parsing, batch, file, error paths |
 | `TestRateLimiting` | 1 | 4-second delay enforcement |
