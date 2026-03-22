@@ -25,6 +25,9 @@ except ImportError:
 # Global debug flag
 DEBUG = False
 
+# Default Gemini model
+DEFAULT_MODEL = 'gemini-2.5-flash'
+
 def debug_print(message, **kwargs):
     """Print debug messages only if DEBUG is enabled"""
     if DEBUG:
@@ -162,7 +165,7 @@ def compress_video(input_path, output_path, target_size_mb=18):
         debug_print(f"Compression error: {e}", file=sys.stderr)
         return None
 
-def transcribe_video(video_path, temp_dir=None):
+def transcribe_video(video_path, temp_dir=None, model_name=DEFAULT_MODEL):
     """Send video to Gemini API, wait for processing, then transcribe"""
     try:
         debug_print("Starting Gemini API call (video)...")
@@ -222,8 +225,8 @@ def transcribe_video(video_path, temp_dir=None):
             print("ERROR: File processing timeout", file=sys.stderr)
             return None
 
-        debug_print("Creating model...")
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        debug_print(f"Creating model: {model_name}")
+        model = genai.GenerativeModel(model_name)
         
         prompt = (
             "Transcribe all spoken words from this video. "
@@ -275,16 +278,20 @@ def transcribe_video(video_path, temp_dir=None):
             return None
 
 def check_available_models():
-    """List available Gemini models"""
+    """List available Gemini models and return their names"""
     try:
+        models = []
         debug_print("Available models:")
         for model in genai.list_models():
             if 'generateContent' in model.supported_generation_methods:
                 debug_print(f"  - {model.name}")
+                models.append(model.name)
+        return models
     except Exception as e:
         debug_print(f"Error listing models: {e}")
+        return [DEFAULT_MODEL]
 
-def process_url(url, index=None, total=None):
+def process_url(url, index=None, total=None, model_name=DEFAULT_MODEL):
     """Process a single URL"""
     prefix = f"[{index}/{total}] " if index and total else ""
     
@@ -307,7 +314,7 @@ def process_url(url, index=None, total=None):
             return None
         
         # Transcribe
-        transcription = transcribe_video(video_path, temp_dir)
+        transcription = transcribe_video(video_path, temp_dir, model_name=model_name)
         if transcription:
             return transcription
         else:
@@ -321,9 +328,9 @@ def main():
         # Check arguments
         if len(sys.argv) < 2:
             print("Usage:", file=sys.stderr)
-            print("  Single: python transcribe.py <reel_url> [--debug]", file=sys.stderr)
-            print("  Batch:  python transcribe.py <url1> <url2> <url3> [--debug]", file=sys.stderr)
-            print("  File:   python transcribe.py --file urls.txt [--debug]", file=sys.stderr)
+            print("  Single: python transcribe.py <reel_url> [--model <name>] [--debug]", file=sys.stderr)
+            print("  Batch:  python transcribe.py <url1> <url2> <url3> [--model <name>] [--debug]", file=sys.stderr)
+            print("  File:   python transcribe.py --file urls.txt [--model <name>] [--debug]", file=sys.stderr)
             sys.exit(1)
         
         # Parse arguments
@@ -332,6 +339,18 @@ def main():
             DEBUG = True
             args.remove('--debug')
             debug_print("Debug mode enabled")
+        
+        # Parse --model flag
+        model_name = DEFAULT_MODEL
+        if '--model' in args:
+            model_index = args.index('--model')
+            if model_index + 1 >= len(args):
+                print("ERROR: --model requires a model name", file=sys.stderr)
+                sys.exit(1)
+            model_name = args[model_index + 1]
+            args.pop(model_index + 1)
+            args.pop(model_index)
+            debug_print(f"Using model: {model_name}")
         
         # Get URLs
         urls = []
@@ -386,7 +405,7 @@ def main():
         results = []
         
         for i, url in enumerate(urls, 1):
-            transcription = process_url(url, i, total)
+            transcription = process_url(url, i, total, model_name=model_name)
             results.append({
                 'url': url,
                 'transcription': transcription,

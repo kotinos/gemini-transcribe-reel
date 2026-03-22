@@ -833,5 +833,126 @@ class TestOutputFormatting:
         assert "ERROR" not in captured.out
 
 
+class TestDynamicModelSelection:
+    """Test dynamic model selection feature"""
+
+    @patch('transcribe.genai.upload_file')
+    @patch('transcribe.genai.get_file')
+    @patch('transcribe.genai.GenerativeModel')
+    @patch('pathlib.Path.stat')
+    def test_transcribe_video_custom_model(self, mock_stat, mock_model_class,
+                                           mock_get_file, mock_upload):
+        """Test that a custom model name is passed to GenerativeModel"""
+        mock_stat.return_value.st_size = 10 * 1024 * 1024
+        mock_video_file = Mock()
+        mock_video_file.name = "test_file"
+        mock_video_file.delete = Mock()
+        mock_upload.return_value = mock_video_file
+        mock_file_info = Mock()
+        mock_file_info.state.name = 'ACTIVE'
+        mock_get_file.return_value = mock_file_info
+        mock_model = Mock()
+        mock_response = Mock()
+        mock_response.text = "Custom model result"
+        mock_model.generate_content.return_value = mock_response
+        mock_model_class.return_value = mock_model
+
+        result = transcribe.transcribe_video("test.mp4", model_name="gemini-2.0-flash")
+        assert result == "Custom model result"
+        mock_model_class.assert_called_once_with("gemini-2.0-flash")
+
+    @patch('transcribe.genai.upload_file')
+    @patch('transcribe.genai.get_file')
+    @patch('transcribe.genai.GenerativeModel')
+    @patch('pathlib.Path.stat')
+    def test_transcribe_video_default_model(self, mock_stat, mock_model_class,
+                                            mock_get_file, mock_upload):
+        """Test that DEFAULT_MODEL is used when no model specified"""
+        mock_stat.return_value.st_size = 10 * 1024 * 1024
+        mock_video_file = Mock()
+        mock_video_file.name = "test_file"
+        mock_video_file.delete = Mock()
+        mock_upload.return_value = mock_video_file
+        mock_file_info = Mock()
+        mock_file_info.state.name = 'ACTIVE'
+        mock_get_file.return_value = mock_file_info
+        mock_model = Mock()
+        mock_response = Mock()
+        mock_response.text = "Default model result"
+        mock_model.generate_content.return_value = mock_response
+        mock_model_class.return_value = mock_model
+
+        result = transcribe.transcribe_video("test.mp4")
+        assert result == "Default model result"
+        mock_model_class.assert_called_once_with(transcribe.DEFAULT_MODEL)
+
+    @patch('transcribe.download_reel')
+    @patch('transcribe.transcribe_video')
+    @patch('transcribe.Path')
+    def test_process_url_passes_model(self, mock_path, mock_transcribe, mock_download):
+        """Test that process_url passes model_name to transcribe_video"""
+        mock_download.return_value = "/tmp/video.mp4"
+        mock_transcribe.return_value = "Result"
+        mock_path_instance = MagicMock()
+        mock_path_instance.exists.return_value = True
+        mock_path_instance.stat.return_value.st_size = 1024
+        mock_path.return_value = mock_path_instance
+
+        transcribe.process_url("https://example.com/video", model_name="gemini-2.0-flash")
+        mock_transcribe.assert_called_once()
+        _, kwargs = mock_transcribe.call_args
+        assert kwargs.get('model_name') == "gemini-2.0-flash"
+
+    @patch('transcribe.genai.list_models')
+    def test_check_available_models_returns_list(self, mock_list_models):
+        """Test that check_available_models returns a list of model name strings"""
+        mock_model1 = Mock()
+        mock_model1.name = "gemini-2.5-flash"
+        mock_model1.supported_generation_methods = ['generateContent']
+        mock_model2 = Mock()
+        mock_model2.name = "gemini-2.0-flash"
+        mock_model2.supported_generation_methods = ['generateContent']
+        mock_list_models.return_value = [mock_model1, mock_model2]
+
+        result = transcribe.check_available_models()
+        assert result == ["gemini-2.5-flash", "gemini-2.0-flash"]
+
+    @patch('transcribe.genai.list_models')
+    def test_check_available_models_error_returns_default(self, mock_list_models):
+        """Test that check_available_models returns [DEFAULT_MODEL] on error"""
+        mock_list_models.side_effect = Exception("API error")
+
+        result = transcribe.check_available_models()
+        assert result == [transcribe.DEFAULT_MODEL]
+
+    @patch('transcribe.check_network')
+    @patch('transcribe.check_dependencies')
+    @patch('transcribe.load_dotenv')
+    @patch('os.getenv')
+    @patch('transcribe.genai.configure')
+    @patch('transcribe.process_url')
+    def test_main_model_flag(self, mock_process, mock_configure, mock_getenv,
+                             mock_load_dotenv, mock_check_deps, mock_check_network, capsys):
+        """Test --model flag is parsed and passed to process_url"""
+        mock_check_network.return_value = True
+        mock_getenv.return_value = "test_api_key"
+        mock_process.return_value = "Result"
+
+        with patch.object(sys, 'argv', ['transcribe.py', 'https://example.com/video',
+                                       '--model', 'gemini-2.0-flash']):
+            transcribe.main()
+
+        mock_process.assert_called_once()
+        _, kwargs = mock_process.call_args
+        assert kwargs.get('model_name') == 'gemini-2.0-flash'
+
+    def test_main_model_flag_without_value(self):
+        """Test --model flag without a value exits with error"""
+        with patch.object(sys, 'argv', ['transcribe.py', 'https://example.com/video', '--model']):
+            with pytest.raises(SystemExit) as exc_info:
+                transcribe.main()
+            assert exc_info.value.code == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
